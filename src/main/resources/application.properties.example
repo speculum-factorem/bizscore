@@ -1,0 +1,17 @@
+spring.application.name=bizscore-service
+server.port=8080
+
+# Database Configuration
+spring.datasource.url=jdbc:postgresql://localhost:5432/bizscoredb
+spring.datasource.username=your_username
+spring.datasource.password=your_password
+
+# JPA
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+
+# ML Service
+ml.service.url=http://localhost:8000
+
+# Logging
+logging.level.com.bizscore=DEBUG
