@@ -5,6 +5,12 @@ import com.bizscore.dto.response.JwtResponse;
 import com.bizscore.entity.User;
 import com.bizscore.repository.UserRepository;
 import com.bizscore.service.JwtService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
+@Tag(name = "Authentication API", description = "API для аутентификации и регистрации")
 public class AuthController {
 
     private final AuthenticationManager authenticationManager;
@@ -32,8 +39,16 @@ public class AuthController {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
 
+    @Operation(summary = "Аутентификация пользователя", description = "Вход в систему и получение JWT токена")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Успешная аутентификация"),
+            @ApiResponse(responseCode = "401", description = "Неверные учетные данные")
+    })
     @PostMapping("/login")
-    public ResponseEntity<JwtResponse> login(@Valid @RequestBody LoginRequest loginRequest) {
+    public ResponseEntity<JwtResponse> login(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(description = "Данные для входа")
+            @Valid @RequestBody LoginRequest loginRequest) {
+
         try {
             Authentication authentication = authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(
@@ -60,8 +75,16 @@ public class AuthController {
         }
     }
 
+    @Operation(summary = "Регистрация пользователя", description = "Создание нового пользователя")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "201", description = "Пользователь успешно создан"),
+            @ApiResponse(responseCode = "409", description = "Пользователь уже существует")
+    })
     @PostMapping("/register")
-    public ResponseEntity<?> register(@Valid @RequestBody LoginRequest registerRequest) {
+    public ResponseEntity<?> register(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(description = "Данные для регистрации")
+            @Valid @RequestBody LoginRequest registerRequest) {
+
         if (userRepository.existsByUsername(registerRequest.getUsername())) {
             log.warn("Registration failed - username already exists: {}", registerRequest.getUsername());
             return ResponseEntity.status(HttpStatus.CONFLICT)

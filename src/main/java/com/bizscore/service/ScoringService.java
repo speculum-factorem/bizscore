@@ -5,10 +5,15 @@ import com.bizscore.dto.response.ScoringResponse;
 import com.bizscore.entity.ScoringRequest;
 import com.bizscore.mapper.ScoringMapper;
 import com.bizscore.repository.ScoringRepository;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
@@ -26,11 +31,16 @@ public class ScoringService {
     private final ScoringRepository repository;
     private final ScoringMapper mapper;
     private final RestTemplate restTemplate;
+    private final MetricsService metricsService;
 
     @Value("${ml.service.url:http://localhost:8000}")
     private String mlServiceUrl;
 
+    @CacheEvict(value = {"scoringResults", "companyScores"}, allEntries = true)
     public ScoringResponse calculateScore(CalculateScoreRequest request) {
+        metricsService.incrementScoringRequests();
+        Timer.Sample timer = metricsService.startScoringTimer();
+
         setupMDC(request.getCompanyName(), request.getInn());
 
         try {
@@ -45,16 +55,27 @@ public class ScoringService {
                 log.info("ML service response processed successfully");
             } else {
                 useFallbackScoring(savedEntity);
+                metricsService.incrementFallbackScoring();
                 log.info("Fallback scoring used");
             }
 
             ScoringRequest resultEntity = repository.save(savedEntity);
-            return mapper.toResponse(resultEntity);
+            ScoringResponse response = mapper.toResponse(resultEntity);
+
+            metricsService.incrementScoringSuccess();
+            if (response.getScore() != null) {
+                metricsService.recordScoreValue(response.getScore());
+            }
+            metricsService.stopScoringTimer(timer, response.getRiskLevel());
+
+            return response;
 
         } catch (Exception e) {
+            metricsService.incrementScoringFailure();
             log.error("Error in score calculation, using fallback", e);
             ScoringRequest fallbackEntity = mapper.toEntity(request);
             useFallbackScoring(fallbackEntity);
+            metricsService.incrementFallbackScoring();
             ScoringRequest resultEntity = repository.save(fallbackEntity);
             return mapper.toResponse(resultEntity);
         } finally {
@@ -62,8 +83,47 @@ public class ScoringService {
         }
     }
 
+    @Cacheable(value = "scoringResults", key = "#id")
+    public ScoringResponse getById(Long id) {
+        log.info("Fetching score by ID: {} from database", id);
+        return repository.findById(id)
+                .map(mapper::toResponse)
+                .orElse(null);
+    }
+
+    @Cacheable(value = "companyScores", key = "#companyName + '_' + #inn")
+    public ScoringResponse getByCompanyAndInn(String companyName, String inn) {
+        log.info("Fetching score for company: {} with INN: {}", companyName, inn);
+        return repository.findByCompanyNameAndInn(companyName, inn)
+                .map(mapper::toResponse)
+                .orElse(null);
+    }
+
+    public Page<ScoringResponse> getAllScores(Pageable pageable) {
+        log.info("Fetching all scores with pagination: {}", pageable);
+        return repository.findAll(pageable)
+                .map(mapper::toResponse);
+    }
+
+    public Page<ScoringResponse> getScoresByRiskLevel(String riskLevel, Pageable pageable) {
+        log.info("Fetching scores with risk level: {} and pagination: {}", riskLevel, pageable);
+        return repository.findByRiskLevel(riskLevel, pageable)
+                .map(mapper::toResponse);
+    }
+
+    public Map<String, Object> getScoringStats() {
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("totalRequests", repository.count());
+        stats.put("averageScore", repository.findAverageScore());
+        stats.put("lowRiskCount", repository.countByRiskLevel("LOW"));
+        stats.put("mediumRiskCount", repository.countByRiskLevel("MEDIUM"));
+        stats.put("highRiskCount", repository.countByRiskLevel("HIGH"));
+        return stats;
+    }
+
     private Optional<Map<String, Object>> callMLService(ScoringRequest request) {
         try {
+            metricsService.incrementMlServiceCalls();
             Map<String, Object> mlData = buildMLRequestData(request);
             String mlUrl = mlServiceUrl + "/api/v1/score";
 
@@ -118,6 +178,7 @@ public class ScoringService {
         } else {
             log.warn("Invalid ML response, using fallback scoring");
             useFallbackScoring(request);
+            metricsService.incrementFallbackScoring();
         }
     }
 
@@ -174,12 +235,6 @@ public class ScoringService {
         if (score >= 0.7) return "LOW";
         else if (score >= 0.4) return "MEDIUM";
         else return "HIGH";
-    }
-
-    public ScoringResponse getById(Long id) {
-        return repository.findById(id)
-                .map(mapper::toResponse)
-                .orElse(null);
     }
 
     private void setupMDC(String companyName, String inn) {
