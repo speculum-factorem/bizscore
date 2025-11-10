@@ -11,11 +11,12 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 @Slf4j
 @Service
@@ -24,28 +25,27 @@ public class ScoringService {
 
     private final ScoringRepository repository;
     private final ScoringMapper mapper;
+    private final RestTemplate restTemplate;
 
     @Value("${ml.service.url:http://localhost:8000}")
     private String mlServiceUrl;
 
     public ScoringResponse calculateScore(CalculateScoreRequest request) {
-        MDC.put("companyName", request.getCompanyName());
-        MDC.put("inn", request.getInn());
-
-        log.info("Converting request to entity");
-        ScoringRequest entity = mapper.toEntity(request);
-
-        log.info("Saving scoring request to database");
-        ScoringRequest savedEntity = repository.save(entity);
+        setupMDC(request.getCompanyName(), request.getInn());
 
         try {
-            log.info("Calling ML service for scoring");
-            Map<String, Object> mlResponse = callMLService(savedEntity);
+            log.info("Converting request to entity and saving to database");
+            ScoringRequest entity = mapper.toEntity(request);
+            ScoringRequest savedEntity = repository.save(entity);
 
-            if (mlResponse != null) {
-                processMLResponse(savedEntity, mlResponse);
+            Optional<Map<String, Object>> mlResponse = callMLService(savedEntity);
+
+            if (mlResponse.isPresent()) {
+                processMLResponse(savedEntity, mlResponse.get());
+                log.info("ML service response processed successfully");
             } else {
                 useFallbackScoring(savedEntity);
+                log.info("Fallback scoring used");
             }
 
             ScoringRequest resultEntity = repository.save(savedEntity);
@@ -53,13 +53,56 @@ public class ScoringService {
 
         } catch (Exception e) {
             log.error("Error in score calculation, using fallback", e);
-            useFallbackScoring(savedEntity);
-            ScoringRequest resultEntity = repository.save(savedEntity);
+            ScoringRequest fallbackEntity = mapper.toEntity(request);
+            useFallbackScoring(fallbackEntity);
+            ScoringRequest resultEntity = repository.save(fallbackEntity);
             return mapper.toResponse(resultEntity);
         } finally {
-            MDC.remove("companyName");
-            MDC.remove("inn");
+            cleanupMDC();
         }
+    }
+
+    private Optional<Map<String, Object>> callMLService(ScoringRequest request) {
+        try {
+            Map<String, Object> mlData = buildMLRequestData(request);
+            String mlUrl = mlServiceUrl + "/api/v1/score";
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(mlData, headers);
+
+            log.debug("Calling ML service at: {}", mlUrl);
+            ResponseEntity<Map> response = restTemplate.exchange(mlUrl, HttpMethod.POST, entity, Map.class);
+
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                return Optional.of(response.getBody());
+            } else {
+                log.warn("ML service returned non-success status: {}", response.getStatusCode());
+                return Optional.empty();
+            }
+
+        } catch (RestClientException e) {
+            log.error("Error calling ML service: {}", e.getMessage());
+            return Optional.empty();
+        } catch (Exception e) {
+            log.error("Unexpected error calling ML service", e);
+            return Optional.empty();
+        }
+    }
+
+    private Map<String, Object> buildMLRequestData(ScoringRequest request) {
+        Map<String, Object> mlData = new HashMap<>();
+        mlData.put("companyName", request.getCompanyName());
+        mlData.put("inn", request.getInn());
+        mlData.put("businessType", request.getBusinessType());
+        mlData.put("yearsInBusiness", request.getYearsInBusiness());
+        mlData.put("annualRevenue", request.getAnnualRevenue());
+        mlData.put("employeeCount", request.getEmployeeCount());
+        mlData.put("requestedAmount", request.getRequestedAmount());
+        mlData.put("hasExistingLoans", request.getHasExistingLoans());
+        mlData.put("industry", request.getIndustry());
+        mlData.put("creditHistory", request.getCreditHistory());
+        return mlData;
     }
 
     private void processMLResponse(ScoringRequest request, Map<String, Object> mlResponse) {
@@ -71,91 +114,81 @@ public class ScoringService {
             String riskLevel = convertToRiskLevel(decision);
             request.setScore(normalizedScore);
             request.setRiskLevel(riskLevel);
+            log.debug("ML response processed - Score: {}, Risk Level: {}", normalizedScore, riskLevel);
         } else {
+            log.warn("Invalid ML response, using fallback scoring");
             useFallbackScoring(request);
         }
     }
 
     private Integer extractScoreFromResponse(Map<String, Object> mlResponse) {
-        if (mlResponse.containsKey("score")) return (Integer) mlResponse.get("score");
-        if (mlResponse.containsKey("Score")) return (Integer) mlResponse.get("Score");
-        if (mlResponse.containsKey("final_score")) return (Integer) mlResponse.get("final_score");
-        return null;
+        return Optional.ofNullable(mlResponse.get("score"))
+                .or(() -> Optional.ofNullable(mlResponse.get("Score")))
+                .or(() -> Optional.ofNullable(mlResponse.get("final_score")))
+                .filter(Integer.class::isInstance)
+                .map(Integer.class::cast)
+                .orElse(null);
     }
 
     private String extractDecisionFromResponse(Map<String, Object> mlResponse) {
-        if (mlResponse.containsKey("decision")) return (String) mlResponse.get("decision");
-        if (mlResponse.containsKey("Decision")) return (String) mlResponse.get("Decision");
-        if (mlResponse.containsKey("risk_level")) return (String) mlResponse.get("risk_level");
-        if (mlResponse.containsKey("status")) return (String) mlResponse.get("status");
-        return null;
+        return Optional.ofNullable(mlResponse.get("decision"))
+                .or(() -> Optional.ofNullable(mlResponse.get("Decision")))
+                .or(() -> Optional.ofNullable(mlResponse.get("risk_level")))
+                .or(() -> Optional.ofNullable(mlResponse.get("status")))
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .orElse(null);
     }
 
     private String convertToRiskLevel(String decision) {
+        if (decision == null) return "MEDIUM";
+
         String upperDecision = decision.toUpperCase();
         if (upperDecision.contains("APPROVE") || "LOW".equals(upperDecision)) return "LOW";
         if (upperDecision.contains("REJECT") || "HIGH".equals(upperDecision)) return "HIGH";
-        if (upperDecision.contains("MANUAL") || upperDecision.contains("REVIEW") || "MEDIUM".equals(upperDecision)) return "MEDIUM";
+        if (upperDecision.contains("MANUAL") || upperDecision.contains("REVIEW") || "MEDIUM".equals(upperDecision))
+            return "MEDIUM";
         return "MEDIUM";
     }
 
     private void useFallbackScoring(ScoringRequest request) {
         Double fallbackScore = calculateSimpleScore(request);
         request.setScore(fallbackScore);
-
-        String riskLevel;
-        if (fallbackScore >= 0.7) riskLevel = "LOW";
-        else if (fallbackScore >= 0.5) riskLevel = "MEDIUM";
-        else riskLevel = "HIGH";
-
-        request.setRiskLevel(riskLevel);
-    }
-
-    private Map<String, Object> callMLService(ScoringRequest request) {
-        try {
-            RestTemplate restTemplate = new RestTemplate();
-            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-            requestFactory.setConnectTimeout(5000);
-            requestFactory.setReadTimeout(10000);
-            restTemplate.setRequestFactory(requestFactory);
-
-            Map<String, Object> mlData = new HashMap<>();
-            mlData.put("companyName", request.getCompanyName());
-            mlData.put("inn", request.getInn());
-            mlData.put("businessType", request.getBusinessType());
-            mlData.put("yearsInBusiness", request.getYearsInBusiness());
-            mlData.put("annualRevenue", request.getAnnualRevenue());
-            mlData.put("employeeCount", request.getEmployeeCount());
-            mlData.put("requestedAmount", request.getRequestedAmount());
-            mlData.put("hasExistingLoans", request.getHasExistingLoans());
-            mlData.put("industry", request.getIndustry());
-            mlData.put("creditHistory", request.getCreditHistory());
-
-            String mlUrl = mlServiceUrl + "/api/v1/score";
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(mlData, headers);
-
-            ResponseEntity<Map> response = restTemplate.exchange(mlUrl, HttpMethod.POST, entity, Map.class);
-            return response.getBody();
-
-        } catch (Exception e) {
-            log.error("Error calling ML service", e);
-            return null;
-        }
+        request.setRiskLevel(determineRiskLevel(fallbackScore));
+        log.debug("Fallback scoring - Score: {}, Risk Level: {}", fallbackScore, request.getRiskLevel());
     }
 
     private Double calculateSimpleScore(ScoringRequest request) {
         double score = 0.5;
-        if (request.getAnnualRevenue() != null && request.getAnnualRevenue() > 1000000) score += 0.2;
+
+        if (request.getAnnualRevenue() != null && request.getAnnualRevenue() > 1_000_000) score += 0.2;
         if (request.getEmployeeCount() != null && request.getEmployeeCount() > 10) score += 0.1;
         if (request.getYearsInBusiness() != null && request.getYearsInBusiness() > 3) score += 0.1;
-        return Math.min(score, 1.0);
+        if (request.getCreditHistory() != null && request.getCreditHistory() > 2) score += 0.1;
+        if (Boolean.TRUE.equals(request.getHasExistingLoans())) score -= 0.1;
+
+        return Math.max(0.0, Math.min(score, 1.0));
+    }
+
+    private String determineRiskLevel(Double score) {
+        if (score >= 0.7) return "LOW";
+        else if (score >= 0.4) return "MEDIUM";
+        else return "HIGH";
     }
 
     public ScoringResponse getById(Long id) {
-        ScoringRequest entity = repository.findById(id).orElse(null);
-        return entity != null ? mapper.toResponse(entity) : null;
+        return repository.findById(id)
+                .map(mapper::toResponse)
+                .orElse(null);
+    }
+
+    private void setupMDC(String companyName, String inn) {
+        if (companyName != null) MDC.put("companyName", companyName);
+        if (inn != null) MDC.put("inn", inn);
+    }
+
+    private void cleanupMDC() {
+        MDC.remove("companyName");
+        MDC.remove("inn");
     }
 }
