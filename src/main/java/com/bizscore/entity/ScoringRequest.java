@@ -29,7 +29,6 @@ public class ScoringRequest {
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
-    // Поля для ML сервиса
     private String inn;
 
     @Column(name = "business_type")

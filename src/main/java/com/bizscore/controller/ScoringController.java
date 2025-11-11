@@ -1,6 +1,7 @@
 package com.bizscore.controller;
 
 import com.bizscore.dto.request.CalculateScoreRequest;
+import com.bizscore.dto.response.EnhancedScoringResponse;
 import com.bizscore.dto.response.ScoringResponse;
 import com.bizscore.service.ScoringService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -38,12 +39,12 @@ public class ScoringController {
     @Operation(summary = "Рассчитать скоринговый балл", description = "Рассчитывает скоринговый балл для компании на основе предоставленных данных")
     @ApiResponses(value = {
             @ApiResponse(responseCode = "200", description = "Успешный расчет",
-                    content = @Content(schema = @Schema(implementation = ScoringResponse.class))),
+                    content = @Content(schema = @Schema(implementation = EnhancedScoringResponse.class))),
             @ApiResponse(responseCode = "400", description = "Неверные входные данные"),
             @ApiResponse(responseCode = "500", description = "Внутренняя ошибка сервера")
     })
     @PostMapping("/score")
-    public ResponseEntity<ScoringResponse> calculateScore(
+    public ResponseEntity<EnhancedScoringResponse> calculateScore(
             @Parameter(description = "Данные для расчета скоринга")
             @Valid @RequestBody CalculateScoreRequest request) {
 
@@ -52,7 +53,7 @@ public class ScoringController {
 
         try {
             log.info("Starting score calculation for company: {}", request.getCompanyName());
-            ScoringResponse result = scoringService.calculateScore(request);
+            EnhancedScoringResponse result = scoringService.calculateScore(request);
             log.info("Score calculation completed - Score: {}, Risk Level: {}",
                     result.getScore(), result.getRiskLevel());
             return ResponseEntity.ok(result);
@@ -193,6 +194,32 @@ public class ScoringController {
     @GetMapping("/metrics")
     public ResponseEntity<String> metrics() {
         return ResponseEntity.ok("Metrics endpoint is available at /actuator/prometheus");
+    }
+
+    @Operation(summary = "Получить расширенную информацию о скоринге")
+    @GetMapping("/score/{id}/enhanced")
+    public ResponseEntity<EnhancedScoringResponse> getEnhancedScore(@PathVariable Long id) {
+        String requestId = generateRequestId();
+        setupMDC(requestId, null, null, "get_enhanced_score");
+
+        try {
+            log.info("Retrieving enhanced score for ID: {}", id);
+            EnhancedScoringResponse result = scoringService.getEnhancedScore(id);
+
+            if (result == null) {
+                log.warn("Enhanced score not found for ID: {}", id);
+                return ResponseEntity.notFound().build();
+            }
+
+            log.info("Enhanced score retrieved successfully for ID: {}", id);
+            return ResponseEntity.ok(result);
+
+        } catch (Exception e) {
+            log.error("Failed to retrieve enhanced score for ID: {}", id, e);
+            return ResponseEntity.internalServerError().build();
+        } finally {
+            MDC.clear();
+        }
     }
 
     private String generateRequestId() {

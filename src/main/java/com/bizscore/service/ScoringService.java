@@ -1,9 +1,13 @@
 package com.bizscore.service;
 
 import com.bizscore.dto.request.CalculateScoreRequest;
+import com.bizscore.dto.response.EnhancedScoringResponse;
+import com.bizscore.dto.response.ScoringDecisionResponse;
 import com.bizscore.dto.response.ScoringResponse;
+import com.bizscore.entity.ScoringDecision;
 import com.bizscore.entity.ScoringRequest;
 import com.bizscore.mapper.ScoringMapper;
+import com.bizscore.repository.ScoringDecisionRepository;
 import com.bizscore.repository.ScoringRepository;
 import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
@@ -32,12 +36,14 @@ public class ScoringService {
     private final ScoringMapper mapper;
     private final RestTemplate restTemplate;
     private final MetricsService metricsService;
+    private final PolicyEngineService policyEngineService;
+    private final ScoringDecisionRepository scoringDecisionRepository;
 
     @Value("${ml.service.url:http://localhost:8000}")
     private String mlServiceUrl;
 
     @CacheEvict(value = {"scoringResults", "companyScores"}, allEntries = true)
-    public ScoringResponse calculateScore(CalculateScoreRequest request) {
+    public EnhancedScoringResponse calculateScore(CalculateScoreRequest request) {
         metricsService.incrementScoringRequests();
         Timer.Sample timer = metricsService.startScoringTimer();
 
@@ -48,6 +54,11 @@ public class ScoringService {
             ScoringRequest entity = mapper.toEntity(request);
             ScoringRequest savedEntity = repository.save(entity);
 
+            // Шаг 1: Применяем политики риска ДО вызова ML сервиса
+            ScoringDecision decision = policyEngineService.evaluatePolicies(savedEntity);
+            log.info("Policy evaluation completed: {}", decision.getDecision());
+
+            // Шаг 2: ВСЕГДА вызываем ML сервис (как и раньше)
             Optional<Map<String, Object>> mlResponse = callMLService(savedEntity);
 
             if (mlResponse.isPresent()) {
@@ -59,8 +70,12 @@ public class ScoringService {
                 log.info("Fallback scoring used");
             }
 
+            // Шаг 3: Сохраняем финальный результат
             ScoringRequest resultEntity = repository.save(savedEntity);
-            ScoringResponse response = mapper.toResponse(resultEntity);
+            ScoringResponse basicResponse = mapper.toResponse(resultEntity);
+
+            // Шаг 4: Обогащаем ответ информацией о решении политик
+            EnhancedScoringResponse response = enhanceWithDecisionInfo(basicResponse, decision);
 
             metricsService.incrementScoringSuccess();
             if (response.getScore() != null) {
@@ -77,7 +92,19 @@ public class ScoringService {
             useFallbackScoring(fallbackEntity);
             metricsService.incrementFallbackScoring();
             ScoringRequest resultEntity = repository.save(fallbackEntity);
-            return mapper.toResponse(resultEntity);
+            ScoringResponse basicResponse = mapper.toResponse(resultEntity);
+
+            // Создаем базовый decision для fallback случая
+            ScoringDecision fallbackDecision = new ScoringDecision();
+            fallbackDecision.setScoringRequestId(resultEntity.getId());
+            fallbackDecision.setDecision("MANUAL_REVIEW");
+            fallbackDecision.setReason("Fallback scoring used due to error");
+            fallbackDecision.setAppliedPolicy("SYSTEM_FALLBACK");
+            fallbackDecision.setPriority("MEDIUM");
+            fallbackDecision.setFinalDecision("PENDING");
+            scoringDecisionRepository.save(fallbackDecision);
+
+            return enhanceWithDecisionInfo(basicResponse, fallbackDecision);
         } finally {
             cleanupMDC();
         }
@@ -89,6 +116,18 @@ public class ScoringService {
         return repository.findById(id)
                 .map(mapper::toResponse)
                 .orElse(null);
+    }
+
+    public EnhancedScoringResponse getEnhancedScore(Long id) {
+        ScoringResponse basicResponse = getById(id);
+        if (basicResponse == null) {
+            return null;
+        }
+
+        ScoringDecision decision = scoringDecisionRepository.findByScoringRequestId(id)
+                .orElse(null);
+
+        return enhanceWithDecisionInfo(basicResponse, decision);
     }
 
     @Cacheable(value = "companyScores", key = "#companyName + '_' + #inn")
@@ -235,6 +274,69 @@ public class ScoringService {
         if (score >= 0.7) return "LOW";
         else if (score >= 0.4) return "MEDIUM";
         else return "HIGH";
+    }
+
+    private EnhancedScoringResponse enhanceWithDecisionInfo(ScoringResponse response, ScoringDecision decision) {
+        try {
+            EnhancedScoringResponse enhancedResponse = new EnhancedScoringResponse();
+            enhancedResponse.setId(response.getId());
+            enhancedResponse.setCompanyName(response.getCompanyName());
+            enhancedResponse.setInn(response.getInn());
+            enhancedResponse.setScore(response.getScore());
+            enhancedResponse.setRiskLevel(response.getRiskLevel());
+            enhancedResponse.setCreatedAt(response.getCreatedAt());
+
+            // Определяем статус обработки на основе решения политик
+            String processingStatus = "MANUAL_REVIEW";
+            if (decision != null) {
+                processingStatus = switch (decision.getDecision()) {
+                    case "AUTO_APPROVE" -> "AUTO_APPROVED";
+                    case "AUTO_REJECT" -> "AUTO_REJECTED";
+                    case "ESCALATE_TO_MANAGER" -> "ESCALATED";
+                    default -> "MANUAL_REVIEW";
+                };
+
+                enhancedResponse.setPriority(decision.getPriority());
+                enhancedResponse.setDecisionReason(decision.getReason());
+
+                // Преобразуем decision в response DTO
+                ScoringDecisionResponse decisionResponse = new ScoringDecisionResponse();
+                decisionResponse.setId(decision.getId());
+                decisionResponse.setScoringRequestId(decision.getScoringRequestId());
+                decisionResponse.setDecision(decision.getDecision());
+                decisionResponse.setReason(decision.getReason());
+                decisionResponse.setAppliedPolicy(decision.getAppliedPolicy());
+                decisionResponse.setPriority(decision.getPriority());
+                decisionResponse.setManagerNotes(decision.getManagerNotes());
+                decisionResponse.setFinalDecision(decision.getFinalDecision());
+                decisionResponse.setResolvedBy(decision.getResolvedBy());
+                decisionResponse.setResolvedAt(decision.getResolvedAt());
+                decisionResponse.setCreatedAt(decision.getCreatedAt());
+
+                enhancedResponse.setDecisionDetails(decisionResponse);
+            } else {
+                enhancedResponse.setPriority("MEDIUM");
+                enhancedResponse.setDecisionReason("No policy decision available");
+            }
+
+            enhancedResponse.setProcessingStatus(processingStatus);
+
+            return enhancedResponse;
+
+        } catch (Exception e) {
+            log.warn("Error enhancing response with decision info, returning original response");
+            EnhancedScoringResponse fallback = new EnhancedScoringResponse();
+            fallback.setId(response.getId());
+            fallback.setCompanyName(response.getCompanyName());
+            fallback.setInn(response.getInn());
+            fallback.setScore(response.getScore());
+            fallback.setRiskLevel(response.getRiskLevel());
+            fallback.setCreatedAt(response.getCreatedAt());
+            fallback.setProcessingStatus("MANUAL_REVIEW");
+            fallback.setPriority("MEDIUM");
+            fallback.setDecisionReason("Error processing policy information");
+            return fallback;
+        }
     }
 
     private void setupMDC(String companyName, String inn) {
