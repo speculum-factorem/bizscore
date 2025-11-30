@@ -4,7 +4,6 @@ import com.bizscore.dto.request.BatchScoringRequest;
 import com.bizscore.dto.request.CalculateScoreRequest;
 import com.bizscore.dto.response.BatchScoringResponse;
 import com.bizscore.dto.response.EnhancedScoringResponse;
-import com.bizscore.dto.response.ScoringResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -23,9 +22,9 @@ import java.util.stream.Collectors;
 public class AdvancedScoringService {
 
     private final ScoringService scoringService;
-    private final SlaMonitoringService slaMonitoringService;
-    private final AuditService auditService;
 
+    // @Transactional не используется здесь, так как async методы выполняются в отдельных потоках
+    // и не могут наследовать транзакцию родителя. Каждый async метод имеет свою транзакцию.
     public BatchScoringResponse processBatchScoring(BatchScoringRequest request) {
         log.info("Обработка пакетного запроса для {} компаний", request.getRequests().size());
 
@@ -69,17 +68,30 @@ public class AdvancedScoringService {
 
     @Async("scoringExecutor")
     public CompletableFuture<EnhancedScoringResponse> processSingleScoringAsync(CalculateScoreRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            String requestId = UUID.randomUUID().toString().substring(0, 8);
-            try {
-                log.debug("Асинхронная обработка скоринга для компании: {}", request.getCompanyName());
-                return scoringService.calculateScore(request);
-            } catch (Exception e) {
-                log.error("Ошибка асинхронной обработки скоринга для компании: {}",
-                        request.getCompanyName(), e);
-                throw new RuntimeException(e);
-            }
-        });
+        try {
+            log.debug("Асинхронная обработка скоринга для компании: {}", request.getCompanyName());
+            EnhancedScoringResponse result = scoringService.calculateScore(request);
+            return CompletableFuture.completedFuture(result);
+        } catch (Exception e) {
+            log.error("Ошибка асинхронной обработки скоринга для компании: {}",
+                    request.getCompanyName(), e);
+            // Создаем fallback ответ для обработки ошибок
+            EnhancedScoringResponse fallbackResponse = createFallbackResponse(request, e);
+            return CompletableFuture.completedFuture(fallbackResponse);
+        }
+    }
+
+    private EnhancedScoringResponse createFallbackResponse(CalculateScoreRequest request, Exception e) {
+        // Создаем базовый ответ с информацией об ошибке
+        EnhancedScoringResponse response = new EnhancedScoringResponse();
+        response.setCompanyName(request.getCompanyName());
+        response.setInn(request.getInn());
+        response.setScore(0.0);
+        response.setRiskLevel("HIGH");
+        response.setProcessingStatus("ERROR");
+        response.setPriority("HIGH");
+        response.setDecisionReason("Ошибка обработки: " + e.getMessage());
+        return response;
     }
 
     public EnhancedScoringResponse recalculateScore(Long scoringId) {
@@ -107,7 +119,7 @@ public class AdvancedScoringService {
         trends.put("riskDistribution", riskDistribution);
 
         // Тенденции среднего скора
-        Map<String, Double> scoreTrends = new HashMap<>();
+        Map<String, Object> scoreTrends = new HashMap<>();
         scoreTrends.put("currentWeek", 0.72);
         scoreTrends.put("previousWeek", 0.68);
         scoreTrends.put("trend", "improving");

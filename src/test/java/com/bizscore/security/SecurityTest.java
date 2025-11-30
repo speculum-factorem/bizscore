@@ -43,28 +43,28 @@ class SecurityTest {
     @Test
     @WithAnonymousUser
     void accessProtectedEndpoint_WithoutAuth_ShouldFail() throws Exception {
-        mockMvc.perform(get("/api/scores")))
+        mockMvc.perform(get("/api/scores"))
                 .andExpect(status().isUnauthorized());
     }
 
     @Test
     @WithMockUser
     void accessProtectedEndpoint_WithAuth_ShouldSucceed() throws Exception {
-        mockMvc.perform(get("/api/scores")))
+        mockMvc.perform(get("/api/scores"))
                 .andExpect(status().isOk());
     }
 
     @Test
     @WithMockUser(roles = "USER")
     void accessAdminEndpoint_WithUserRole_ShouldFail() throws Exception {
-        mockMvc.perform(get("/api/v2/scoring/batch")))
+        mockMvc.perform(get("/api/v2/scoring/batch"))
                 .andExpect(status().isForbidden());
     }
 
     @Test
     @WithMockUser(roles = "ADMIN")
     void accessAdminEndpoint_WithAdminRole_ShouldSucceed() throws Exception {
-        mockMvc.perform(get("/api/v2/scoring/batch")))
+        mockMvc.perform(get("/api/v2/scoring/batch"))
                 .andExpect(status().isOk());
     }
 }

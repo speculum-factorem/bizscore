@@ -52,14 +52,17 @@ public class ScoringController {
         setupMDC(requestId, request.getCompanyName(), request.getInn(), "calculate_score");
 
         try {
-            log.info("Starting score calculation for company: {}", request.getCompanyName());
+            log.info("Начало расчета скоринга для компании: {}", request.getCompanyName());
             EnhancedScoringResponse result = scoringService.calculateScore(request);
-            log.info("Score calculation completed - Score: {}, Risk Level: {}",
+            log.info("Расчет скоринга завершен. Скоринг: {}, Уровень риска: {}",
                     result.getScore(), result.getRiskLevel());
+            MDC.put("score", result.getScore() != null ? String.valueOf(result.getScore()) : "null");
+            MDC.put("riskLevel", result.getRiskLevel());
             return ResponseEntity.ok(result);
 
         } catch (Exception e) {
-            log.error("Score calculation failed for company: {}", request.getCompanyName(), e);
+            log.error("Ошибка при расчете скоринга для компании: {}", request.getCompanyName(), e);
+            MDC.put("error", "true");
             return ResponseEntity.internalServerError().build();
         } finally {
             MDC.clear();
@@ -80,19 +83,21 @@ public class ScoringController {
         setupMDC(requestId, null, null, "get_score");
 
         try {
-            log.info("Retrieving score for ID: {}", id);
+            MDC.put("scoringRequestId", String.valueOf(id));
+            log.info("Получение результата скоринга по ID: {}", id);
             ScoringResponse result = scoringService.getById(id);
 
             if (result == null) {
-                log.warn("Score not found for ID: {}", id);
+                log.warn("Результат скоринга не найден для ID: {}", id);
                 return ResponseEntity.notFound().build();
             }
 
-            log.info("Score retrieved successfully for ID: {}", id);
+            log.info("Результат скоринга успешно получен для ID: {}", id);
             return ResponseEntity.ok(result);
 
         } catch (Exception e) {
-            log.error("Failed to retrieve score for ID: {}", id, e);
+            log.error("Ошибка при получении результата скоринга для ID: {}", id, e);
+            MDC.put("error", "true");
             return ResponseEntity.internalServerError().build();
         } finally {
             MDC.clear();

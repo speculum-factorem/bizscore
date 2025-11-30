@@ -1,20 +1,26 @@
+# CI/CD Pipeline для BizScore Service
+# Автоматизированная сборка, тестирование и развертывание приложения
+
 name: CI/CD Pipeline
 
+# Триггеры запуска pipeline
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop ]  # Запуск при push в основные ветки
   pull_request:
-    branches: [ main ]
+    branches: [ main ]  # Запуск при создании PR в main
 
 env:
-  IMAGE_NAME: bizscore-service
-  REGISTRY: ghcr.io
+  IMAGE_NAME: bizscore-service  # Имя Docker образа
+  REGISTRY: ghcr.io  # Реестр контейнеров GitHub
 
 jobs:
+  # Job для запуска тестов
   test:
-    name: Run Tests
+    name: Запуск тестов
     runs-on: ubuntu-latest
 
+    # Сервис PostgreSQL для интеграционных тестов
     services:
       postgres:
         image: postgres:15
@@ -30,109 +36,131 @@ jobs:
           - 5432:5432
 
     steps:
-      - name: Checkout code
+      # Шаг 1: Получение кода из репозитория
+      - name: Получение кода
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      # Шаг 2: Настройка JDK 21
+      - name: Настройка JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-          cache: maven
+          cache: maven  # Кэширование Maven зависимостей
 
-      - name: Run unit tests
+      # Шаг 3: Запуск unit тестов
+      - name: Запуск unit тестов
         run: mvn test
 
-      - name: Run integration tests
+      # Шаг 4: Запуск интеграционных тестов
+      - name: Запуск интеграционных тестов
         run: mvn verify -Dspring.profiles.active=test
         env:
           SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/bizscoredb_test
           SPRING_DATASOURCE_USERNAME: postgres
           SPRING_DATASOURCE_PASSWORD: password
 
-      - name: Generate test coverage report
+      # Шаг 5: Генерация отчета о покрытии тестами
+      - name: Генерация отчета о покрытии тестами
         run: mvn jacoco:report
 
-      - name: Upload coverage reports to Codecov
+      # Шаг 6: Загрузка отчета о покрытии в Codecov
+      - name: Загрузка отчета о покрытии в Codecov
         uses: codecov/codecov-action@v3
         with:
           file: ./target/site/jacoco/jacoco.xml
 
+  # Job для сканирования безопасности
   security-scan:
-    name: Security Scan
+    name: Сканирование безопасности
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      # Шаг 1: Получение кода
+      - name: Получение кода
         uses: actions/checkout@v4
 
-      - name: Run Trivy vulnerability scanner
+      # Шаг 2: Запуск сканера уязвимостей Trivy
+      - name: Запуск сканера уязвимостей Trivy
         uses: aquasecurity/trivy-action@master
         with:
-          scan-type: 'fs'
+          scan-type: 'fs'  # Сканирование файловой системы
           scan-ref: '.'
-          format: 'sarif'
+          format: 'sarif'  # Формат SARIF для GitHub Security
           output: 'trivy-results.sarif'
 
-      - name: Upload Trivy scan results to GitHub Security tab
+      # Шаг 3: Загрузка результатов сканирования в GitHub Security
+      - name: Загрузка результатов сканирования в GitHub Security
         uses: github/codeql-action/upload-sarif@v2
         with:
           sarif_file: 'trivy-results.sarif'
 
+  # Job для сборки и публикации Docker образа
   build:
-    name: Build and Push Docker Image
+    name: Сборка и публикация Docker образа
     runs-on: ubuntu-latest
-    needs: [test, security-scan]
-    if: github.ref == 'refs/heads/main'
+    needs: [test, security-scan]  # Зависит от успешного завершения тестов и сканирования
+    if: github.ref == 'refs/heads/main'  # Только для ветки main
 
     steps:
-      - name: Checkout code
+      # Шаг 1: Получение кода
+      - name: Получение кода
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      # Шаг 2: Настройка JDK 21
+      - name: Настройка JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
           cache: maven
 
-      - name: Build application
+      # Шаг 3: Сборка приложения (без тестов, так как они уже выполнены)
+      - name: Сборка приложения
         run: mvn clean package -DskipTests
 
-      - name: Log in to Container Registry
+      # Шаг 4: Вход в реестр контейнеров GitHub
+      - name: Вход в реестр контейнеров
         uses: docker/login-action@v2
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for Docker
+      # Шаг 5: Извлечение метаданных для Docker (теги, версии)
+      - name: Извлечение метаданных для Docker
         id: meta
         uses: docker/metadata-action@v4
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}
 
-      - name: Build and push Docker image
+      # Шаг 6: Сборка и публикация Docker образа
+      - name: Сборка и публикация Docker образа
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: type=gha  # Использование кэша GitHub Actions
           cache-to: type=gha,mode=max
 
+  # Job для развертывания в production
   deploy:
-    name: Deploy to Production
+    name: Развертывание в Production
     runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
+    needs: build  # Зависит от успешной сборки
+    if: github.ref == 'refs/heads/main'  # Только для ветки main
 
     steps:
-      - name: Checkout code
+      # Шаг 1: Получение кода
+      - name: Получение кода
         uses: actions/checkout@v4
 
-      - name: Deploy to production
+      # Шаг 2: Развертывание в production
+      # ВАЖНО: Настройте переменные окружения и секреты для вашего окружения развертывания
+      - name: Развертывание в production
         run: |
-          echo "Deploying to production environment"
-          # Add your deployment commands here
-          # For example: kubectl apply -f k8s/
+          echo "Развертывание в production окружение"
+          # Добавьте команды развертывания здесь
+          # Например: kubectl apply -f k8s/deployment.yml
+          # Или: helm upgrade --install bizscore-service ./helm-chart

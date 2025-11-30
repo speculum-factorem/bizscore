@@ -1,26 +1,19 @@
 package com.bizscore.controller;
 
 import com.bizscore.dto.request.BatchScoringRequest;
-import com.bizscore.dto.request.CalculateScoreRequest;
 import com.bizscore.dto.response.BatchScoringResponse;
 import com.bizscore.dto.response.EnhancedScoringResponse;
-import com.bizscore.dto.response.ScoringResponse;
 import com.bizscore.service.AdvancedScoringService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * Расширенный контроллер скоринга с пакетной обработкой и дополнительными функциями
@@ -40,7 +33,6 @@ public class AdvancedScoringController {
     public ResponseEntity<BatchScoringResponse> calculateBatchScore(
             @Valid @RequestBody BatchScoringRequest request) {
 
-        String requestId = generateRequestId();
         log.info("Начало пакетного расчета скоринга для {} компаний", request.getRequests().size());
 
         try {
@@ -59,7 +51,6 @@ public class AdvancedScoringController {
     @PostMapping("/{id}/recalculate")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<EnhancedScoringResponse> recalculateScore(@PathVariable Long id) {
-        String requestId = generateRequestId();
         log.info("Перерасчет скоринга для ID: {}", id);
 
         try {
@@ -82,7 +73,6 @@ public class AdvancedScoringController {
             @RequestParam String period,
             @RequestParam(defaultValue = "30") int days) {
 
-        String requestId = generateRequestId();
         log.info("Запрос анализа тенденций за период: {}, дней: {}", period, days);
 
         try {
@@ -98,7 +88,6 @@ public class AdvancedScoringController {
     @Operation(summary = "Сравнительный анализ", description = "Сравнивает скоринговые показатели компаний")
     @PostMapping("/analytics/compare")
     public ResponseEntity<Map<String, Object>> compareCompanies(@RequestBody Map<String, Object> request) {
-        String requestId = generateRequestId();
         log.info("Сравнительный анализ компаний");
 
         try {
@@ -109,9 +98,5 @@ public class AdvancedScoringController {
             log.error("Ошибка сравнительного анализа", e);
             return ResponseEntity.internalServerError().build();
         }
-    }
-
-    private String generateRequestId() {
-        return UUID.randomUUID().toString().substring(0, 8);
     }
 }

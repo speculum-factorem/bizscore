@@ -4,6 +4,8 @@ import com.bizscore.entity.ScoringRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.time.LocalDateTime;
@@ -74,7 +76,8 @@ class ScoringRepositoryTest {
         scoringRepository.save(request2);
 
         // When
-        List<ScoringRequest> lowRiskCompanies = scoringRepository.findByRiskLevel("LOW");
+        Page<ScoringRequest> lowRiskCompaniesPage = scoringRepository.findByRiskLevel("LOW", Pageable.unpaged());
+        List<ScoringRequest> lowRiskCompanies = lowRiskCompaniesPage.getContent();
 
         // Then
         assertFalse(lowRiskCompanies.isEmpty());

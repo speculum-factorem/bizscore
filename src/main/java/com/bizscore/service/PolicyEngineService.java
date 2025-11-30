@@ -7,6 +7,7 @@ import com.bizscore.repository.RiskPolicyRepository;
 import com.bizscore.repository.ScoringDecisionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 import com.bizscore.entity.PolicyCondition;
@@ -17,19 +18,23 @@ import java.util.List;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class PolicyEngineService {
+public class PolicyEngineService implements PolicyEngineServiceInterface {
 
     private final RiskPolicyRepository riskPolicyRepository;
     private final ScoringDecisionRepository scoringDecisionRepository;
 
+    // Оценка политик риска для запроса на скоринг
     public ScoringDecision evaluatePolicies(ScoringRequest scoringRequest) {
-        log.info("Evaluating policies for scoring request ID: {}", scoringRequest.getId());
+        MDC.put("scoringRequestId", String.valueOf(scoringRequest.getId()));
+        log.info("Начало оценки политик для запроса на скоринг ID: {}", scoringRequest.getId());
 
+        // Загрузка активных политик из базы данных
         List<RiskPolicy> activePolicies = riskPolicyRepository.findActivePoliciesByTypes(
                 List.of("APPROVAL", "REJECTION", "ESCALATION", "PRIORITY"));
+        log.debug("Загружено активных политик: {}", activePolicies.size());
 
         String finalDecision = "MANUAL_REVIEW";
-        String reason = "No matching policies found";
+        String reason = "Совпадающие политики не найдены";
         String appliedPolicy = null;
         String priority = "MEDIUM";
 
@@ -38,19 +43,24 @@ public class PolicyEngineService {
             if (evaluatePolicy(policy, scoringRequest)) {
                 appliedPolicy = policy.getName();
                 finalDecision = policy.getAction();
-                reason = String.format("Policy '%s' triggered", policy.getName());
+                reason = String.format("Политика '%s' сработала", policy.getName());
+                log.debug("Политика '{}' применена с решением: {}", policy.getName(), finalDecision);
 
                 if ("SET_PRIORITY".equals(policy.getAction()) && policy.getActionValue() != null) {
+                    // Для политик приоритета продолжаем проверку других политик
                     priority = policy.getActionValue();
-                    // Продолжаем проверять другие политики для приоритета
                 } else {
-                    break; // Останавливаемся на первом совпадении для APPROVAL/REJECTION
+                    // Для APPROVAL/REJECTION останавливаемся на первом совпадении
+                    break;
                 }
             }
         }
 
+        // Создание решения на основе оценки политик
         ScoringDecision decision = createScoringDecision(scoringRequest.getId(), finalDecision, reason, appliedPolicy, priority);
-        log.info("Policy evaluation completed. Decision: {}, Priority: {}", finalDecision, priority);
+        MDC.put("policyDecision", finalDecision);
+        MDC.put("policyPriority", priority);
+        log.info("Оценка политик завершена. Решение: {}, Приоритет: {}", finalDecision, priority);
 
         return decision;
     }
@@ -84,7 +94,6 @@ public class PolicyEngineService {
 
     private boolean evaluateCondition(PolicyCondition condition, ScoringRequest scoringRequest) {
         String field = condition.getField();
-        String operator = condition.getOperator();
 
         try {
             switch (field) {

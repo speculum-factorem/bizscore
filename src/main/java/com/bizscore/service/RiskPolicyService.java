@@ -1,6 +1,5 @@
 package com.bizscore.service;
 
-import com.bizscore.dto.request.PolicyConditionRequest;
 import com.bizscore.dto.request.RiskPolicyRequest;
 import com.bizscore.entity.PolicyCondition;
 import com.bizscore.entity.RiskPolicy;

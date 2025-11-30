@@ -1,5 +1,6 @@
 package com.bizscore.dto.request;
 
+import com.bizscore.validation.ValidInn;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.PositiveOrZero;
@@ -16,6 +17,7 @@ public class CalculateScoreRequest {
     private String companyName;
 
     @NotBlank(message = "INN is required")
+    @ValidInn(message = "Invalid INN format")
     private String inn;
 
     private String businessType;

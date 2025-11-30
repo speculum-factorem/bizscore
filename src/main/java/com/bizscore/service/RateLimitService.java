@@ -1,12 +1,13 @@
 package com.bizscore.service;
 
+import com.github.benmanes.caffeine.cache.Cache;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Сервис для ограничения частоты запросов по IP и пользователям
@@ -16,28 +17,30 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class RateLimitService {
 
-    private final ConcurrentHashMap<String, AtomicInteger> rateLimitCache;
+    private final Cache<String, AtomicInteger> rateLimitCache;
 
-    // Лимиты запросов
-    private static final int MAX_REQUESTS_PER_MINUTE = 100;
-    private static final int MAX_REQUESTS_PER_HOUR = 1000;
+    @Value("${rate-limit.requests-per-minute:100}")
+    private int maxRequestsPerMinute;
+
+    @Value("${rate-limit.requests-per-hour:1000}")
+    private int maxRequestsPerHour;
 
     public boolean isAllowed(String clientId, String endpoint) {
         String keyPerMinute = String.format("%s:%s:minute", clientId, endpoint);
         String keyPerHour = String.format("%s:%s:hour", clientId, endpoint);
 
-        AtomicInteger minuteCount = rateLimitCache.computeIfAbsent(keyPerMinute, k -> new AtomicInteger(0));
-        AtomicInteger hourCount = rateLimitCache.computeIfAbsent(keyPerHour, k -> new AtomicInteger(0));
+        AtomicInteger minuteCount = rateLimitCache.get(keyPerMinute, k -> new AtomicInteger(0));
+        AtomicInteger hourCount = rateLimitCache.get(keyPerHour, k -> new AtomicInteger(0));
 
         int currentMinute = minuteCount.incrementAndGet();
         int currentHour = hourCount.incrementAndGet();
 
-        if (currentMinute > MAX_REQUESTS_PER_MINUTE) {
+        if (currentMinute > maxRequestsPerMinute) {
             log.warn("Превышен лимит запросов в минуту для клиента: {}, endpoint: {}", clientId, endpoint);
             return false;
         }
 
-        if (currentHour > MAX_REQUESTS_PER_HOUR) {
+        if (currentHour > maxRequestsPerHour) {
             log.warn("Превышен лимит запросов в час для клиента: {}, endpoint: {}", clientId, endpoint);
             return false;
         }
@@ -45,10 +48,10 @@ public class RateLimitService {
         return true;
     }
 
+    @Scheduled(fixedRate = 60000) // Каждую минуту
     public void cleanupExpiredEntries() {
-        rateLimitCache.entrySet().removeIf(entry -> {
-            // Здесь можно добавить логику очистки устаревших записей
-            return false;
-        });
+        // Caffeine автоматически очищает истекшие записи, но можно принудительно очистить
+        rateLimitCache.cleanUp();
+        log.debug("Rate limit cache cleanup completed");
     }
 }

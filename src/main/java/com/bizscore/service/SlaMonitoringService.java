@@ -31,7 +31,9 @@ public class SlaMonitoringService {
     private static final long MAX_RESPONSE_TIME_MS = 5000;
     private static final double MAX_ERROR_RATE = 0.05;
     private static final int MAX_CONCURRENT_REQUESTS = 100;
+    @SuppressWarnings("unused")
     private static final double MAX_CPU_USAGE = 0.8;
+    @SuppressWarnings("unused")
     private static final long MAX_MEMORY_USAGE = 85;
 
     public SlaMonitoringService(MeterRegistry meterRegistry) {

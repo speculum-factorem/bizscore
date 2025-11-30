@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -17,7 +18,7 @@ public interface ScoringRepository extends JpaRepository<ScoringRequest, Long> {
 
     Page<ScoringRequest> findByRiskLevel(String riskLevel, Pageable pageable);
 
-    @Query("SELECT s FROM ScoringRequest s WHERE s.companyName ILIKE %:companyName%")
+    @Query("SELECT s FROM ScoringRequest s WHERE s.companyName ILIKE CONCAT('%', :companyName, '%')")
     Page<ScoringRequest> findByCompanyNameContaining(@Param("companyName") String companyName, Pageable pageable);
 
     @Query("SELECT COUNT(s) FROM ScoringRequest s WHERE s.riskLevel = :riskLevel")
@@ -25,4 +26,7 @@ public interface ScoringRepository extends JpaRepository<ScoringRequest, Long> {
 
     @Query("SELECT AVG(s.score) FROM ScoringRequest s WHERE s.score IS NOT NULL")
     Double findAverageScore();
+
+    @Query("SELECT s.riskLevel, COUNT(s) FROM ScoringRequest s GROUP BY s.riskLevel")
+    List<Object[]> countByRiskLevelGrouped();
 }

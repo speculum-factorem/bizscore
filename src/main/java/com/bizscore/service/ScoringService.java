@@ -1,8 +1,8 @@
 package com.bizscore.service;
 
+import com.bizscore.client.MlServiceClient;
 import com.bizscore.dto.request.CalculateScoreRequest;
 import com.bizscore.dto.response.EnhancedScoringResponse;
-import com.bizscore.dto.response.ScoringDecisionResponse;
 import com.bizscore.dto.response.ScoringResponse;
 import com.bizscore.entity.ScoringDecision;
 import com.bizscore.entity.ScoringRequest;
@@ -13,36 +13,36 @@ import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.http.*;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClientException;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class ScoringService {
+public class ScoringService implements ScoringServiceInterface {
 
     private final ScoringRepository repository;
     private final ScoringMapper mapper;
-    private final RestTemplate restTemplate;
     private final MetricsService metricsService;
-    private final PolicyEngineService policyEngineService;
+    private final PolicyEngineServiceInterface policyEngineService;
     private final ScoringDecisionRepository scoringDecisionRepository;
+    private final MlServiceClient mlServiceClient;
+    private final ScoringProcessor scoringProcessor;
+    private final ScoringResponseEnricher responseEnricher;
 
-    @Value("${ml.service.url:http://localhost:8000}")
-    private String mlServiceUrl;
-
-    @CacheEvict(value = {"scoringResults", "companyScores"}, allEntries = true)
+    @Transactional
+    @CacheEvict(value = {"scoringResults", "companyScores", "scoringStats"}, 
+                allEntries = false,
+                key = "#request.companyName + '_' + #request.inn")
     public EnhancedScoringResponse calculateScore(CalculateScoreRequest request) {
         metricsService.incrementScoringRequests();
         Timer.Sample timer = metricsService.startScoringTimer();
@@ -50,32 +50,42 @@ public class ScoringService {
         setupMDC(request.getCompanyName(), request.getInn());
 
         try {
-            log.info("Converting request to entity and saving to database");
+            // Преобразуем DTO в сущность и сохраняем в базу данных
+            log.info("Преобразование запроса в сущность и сохранение в базу данных");
             ScoringRequest entity = mapper.toEntity(request);
             ScoringRequest savedEntity = repository.save(entity);
+            MDC.put("scoringRequestId", String.valueOf(savedEntity.getId()));
 
             // Шаг 1: Применяем политики риска ДО вызова ML сервиса
+            log.info("Начало оценки политик риска для запроса ID: {}", savedEntity.getId());
             ScoringDecision decision = policyEngineService.evaluatePolicies(savedEntity);
-            log.info("Policy evaluation completed: {}", decision.getDecision());
+            log.info("Оценка политик завершена. Решение: {}, Приоритет: {}", decision.getDecision(), decision.getPriority());
+            MDC.put("policyDecision", decision.getDecision());
+            MDC.put("policyPriority", decision.getPriority() != null ? decision.getPriority() : "MEDIUM");
 
-            // Шаг 2: ВСЕГДА вызываем ML сервис (как и раньше)
-            Optional<Map<String, Object>> mlResponse = callMLService(savedEntity);
+            // Шаг 2: ВСЕГДА вызываем ML сервис для расчета скоринга
+            log.info("Вызов ML сервиса для расчета скоринга");
+            Optional<Map<String, Object>> mlResponse = mlServiceClient.calculateScore(savedEntity);
 
-            if (mlResponse.isPresent()) {
-                processMLResponse(savedEntity, mlResponse.get());
-                log.info("ML service response processed successfully");
+            if (mlResponse.isPresent() && scoringProcessor.processMlResponse(savedEntity, mlResponse.get())) {
+                log.info("Ответ ML сервиса успешно обработан. Скоринг: {}, Уровень риска: {}", 
+                        savedEntity.getScore(), savedEntity.getRiskLevel());
+                MDC.put("mlServiceUsed", "true");
             } else {
-                useFallbackScoring(savedEntity);
-                metricsService.incrementFallbackScoring();
-                log.info("Fallback scoring used");
+                log.warn("Использован fallback скоринг из-за недоступности или некорректного ответа ML сервиса");
+                scoringProcessor.applyFallbackScoring(savedEntity);
+                MDC.put("mlServiceUsed", "false");
+                MDC.put("fallbackUsed", "true");
             }
 
-            // Шаг 3: Сохраняем финальный результат
+            // Шаг 3: Сохраняем финальный результат в базу данных
+            log.debug("Сохранение финального результата скоринга в базу данных");
             ScoringRequest resultEntity = repository.save(savedEntity);
             ScoringResponse basicResponse = mapper.toResponse(resultEntity);
 
             // Шаг 4: Обогащаем ответ информацией о решении политик
-            EnhancedScoringResponse response = enhanceWithDecisionInfo(basicResponse, decision);
+            log.debug("Обогащение ответа информацией о решении политик");
+            EnhancedScoringResponse response = responseEnricher.enrich(basicResponse, decision);
 
             metricsService.incrementScoringSuccess();
             if (response.getScore() != null) {
@@ -86,266 +96,169 @@ public class ScoringService {
             return response;
 
         } catch (Exception e) {
+            // Обработка ошибок: используем fallback скоринг
             metricsService.incrementScoringFailure();
-            log.error("Error in score calculation, using fallback", e);
+            log.error("Ошибка при расчете скоринга, используется fallback. Компания: {}, ИНН: {}", 
+                    request.getCompanyName(), request.getInn(), e);
+            MDC.put("error", "true");
+            MDC.put("errorMessage", e.getMessage());
+            
             ScoringRequest fallbackEntity = mapper.toEntity(request);
-            useFallbackScoring(fallbackEntity);
-            metricsService.incrementFallbackScoring();
+            scoringProcessor.applyFallbackScoring(fallbackEntity);
             ScoringRequest resultEntity = repository.save(fallbackEntity);
             ScoringResponse basicResponse = mapper.toResponse(resultEntity);
 
-            // Создаем базовый decision для fallback случая
-            ScoringDecision fallbackDecision = new ScoringDecision();
-            fallbackDecision.setScoringRequestId(resultEntity.getId());
-            fallbackDecision.setDecision("MANUAL_REVIEW");
-            fallbackDecision.setReason("Fallback scoring used due to error");
-            fallbackDecision.setAppliedPolicy("SYSTEM_FALLBACK");
-            fallbackDecision.setPriority("MEDIUM");
-            fallbackDecision.setFinalDecision("PENDING");
+            // Создаем базовое решение для fallback случая
+            ScoringDecision fallbackDecision = createFallbackDecision(resultEntity.getId());
             scoringDecisionRepository.save(fallbackDecision);
+            MDC.put("fallbackUsed", "true");
 
-            return enhanceWithDecisionInfo(basicResponse, fallbackDecision);
+            return responseEnricher.enrich(basicResponse, fallbackDecision);
         } finally {
             cleanupMDC();
         }
     }
 
-    @Cacheable(value = "scoringResults", key = "#id")
+    // Получение результата скоринга по ID с использованием кэша
+    @Cacheable(value = "scoringResults", key = "'id_' + #id")
     public ScoringResponse getById(Long id) {
-        log.info("Fetching score by ID: {} from database", id);
-        return repository.findById(id)
+        MDC.put("scoringRequestId", String.valueOf(id));
+        log.info("Получение результата скоринга по ID: {} из базы данных", id);
+        ScoringResponse response = repository.findById(id)
                 .map(mapper::toResponse)
                 .orElse(null);
+        if (response == null) {
+            log.warn("Результат скоринга не найден для ID: {}", id);
+        }
+        return response;
     }
 
+    // Получение расширенного результата скоринга с информацией о решении политик
     public EnhancedScoringResponse getEnhancedScore(Long id) {
+        MDC.put("scoringRequestId", String.valueOf(id));
+        log.info("Получение расширенного результата скоринга для ID: {}", id);
         ScoringResponse basicResponse = getById(id);
         if (basicResponse == null) {
+            log.warn("Базовый результат скоринга не найден для ID: {}", id);
             return null;
         }
 
         ScoringDecision decision = scoringDecisionRepository.findByScoringRequestId(id)
                 .orElse(null);
+        
+        if (decision != null) {
+            MDC.put("policyDecision", decision.getDecision());
+            log.debug("Найдено решение политики для запроса ID: {}", id);
+        } else {
+            log.debug("Решение политики не найдено для запроса ID: {}", id);
+        }
 
-        return enhanceWithDecisionInfo(basicResponse, decision);
+        return responseEnricher.enrich(basicResponse, decision);
     }
 
+    // Получение результата скоринга по названию компании и ИНН с использованием кэша
     @Cacheable(value = "companyScores", key = "#companyName + '_' + #inn")
     public ScoringResponse getByCompanyAndInn(String companyName, String inn) {
-        log.info("Fetching score for company: {} with INN: {}", companyName, inn);
-        return repository.findByCompanyNameAndInn(companyName, inn)
+        MDC.put("companyName", companyName);
+        MDC.put("inn", inn);
+        log.info("Получение результата скоринга для компании: {} с ИНН: {}", companyName, inn);
+        ScoringResponse response = repository.findByCompanyNameAndInn(companyName, inn)
                 .map(mapper::toResponse)
                 .orElse(null);
+        if (response == null) {
+            log.warn("Результат скоринга не найден для компании: {} с ИНН: {}", companyName, inn);
+        }
+        return response;
     }
 
+    // Получение всех результатов скоринга с пагинацией
     public Page<ScoringResponse> getAllScores(Pageable pageable) {
-        log.info("Fetching all scores with pagination: {}", pageable);
+        log.info("Получение всех результатов скоринга с пагинацией: страница {}, размер {}", 
+                pageable.getPageNumber(), pageable.getPageSize());
+        MDC.put("page", String.valueOf(pageable.getPageNumber()));
+        MDC.put("size", String.valueOf(pageable.getPageSize()));
         return repository.findAll(pageable)
                 .map(mapper::toResponse);
     }
 
+    // Получение результатов скоринга по уровню риска с пагинацией
     public Page<ScoringResponse> getScoresByRiskLevel(String riskLevel, Pageable pageable) {
-        log.info("Fetching scores with risk level: {} and pagination: {}", riskLevel, pageable);
+        MDC.put("riskLevel", riskLevel);
+        log.info("Получение результатов скоринга с уровнем риска: {} и пагинацией: страница {}, размер {}", 
+                riskLevel, pageable.getPageNumber(), pageable.getPageSize());
         return repository.findByRiskLevel(riskLevel, pageable)
                 .map(mapper::toResponse);
     }
 
+    // Получение статистики скоринга с использованием кэша
+    @Cacheable(value = "scoringStats", key = "'stats'")
     public Map<String, Object> getScoringStats() {
+        log.info("Получение статистики скоринга");
         Map<String, Object> stats = new HashMap<>();
-        stats.put("totalRequests", repository.count());
-        stats.put("averageScore", repository.findAverageScore());
-        stats.put("lowRiskCount", repository.countByRiskLevel("LOW"));
-        stats.put("mediumRiskCount", repository.countByRiskLevel("MEDIUM"));
-        stats.put("highRiskCount", repository.countByRiskLevel("HIGH"));
+        
+        // Оптимизированный запрос - получаем все данные за один раз
+        Long totalRequests = repository.count();
+        stats.put("totalRequests", totalRequests);
+        log.debug("Общее количество запросов: {}", totalRequests);
+        
+        Double averageScore = repository.findAverageScore();
+        stats.put("averageScore", averageScore);
+        log.debug("Средний скоринг: {}", averageScore);
+        
+        // Получаем статистику по уровням риска одним запросом для оптимизации
+        List<Object[]> riskLevelCounts = repository.countByRiskLevelGrouped();
+        Map<String, Long> riskCounts = new HashMap<>();
+        riskCounts.put("LOW", 0L);
+        riskCounts.put("MEDIUM", 0L);
+        riskCounts.put("HIGH", 0L);
+        
+        for (Object[] result : riskLevelCounts) {
+            String riskLevel = (String) result[0];
+            Long count = (Long) result[1];
+            riskCounts.put(riskLevel, count);
+            log.debug("Уровень риска {}: {} запросов", riskLevel, count);
+        }
+        
+        stats.put("lowRiskCount", riskCounts.get("LOW"));
+        stats.put("mediumRiskCount", riskCounts.get("MEDIUM"));
+        stats.put("highRiskCount", riskCounts.get("HIGH"));
+        
+        log.info("Статистика скоринга успешно получена");
         return stats;
     }
 
-    private Optional<Map<String, Object>> callMLService(ScoringRequest request) {
-        try {
-            metricsService.incrementMlServiceCalls();
-            Map<String, Object> mlData = buildMLRequestData(request);
-            String mlUrl = mlServiceUrl + "/api/v1/score";
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(mlData, headers);
-
-            log.debug("Calling ML service at: {}", mlUrl);
-            ResponseEntity<Map> response = restTemplate.exchange(mlUrl, HttpMethod.POST, entity, Map.class);
-
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                return Optional.of(response.getBody());
-            } else {
-                log.warn("ML service returned non-success status: {}", response.getStatusCode());
-                return Optional.empty();
-            }
-
-        } catch (RestClientException e) {
-            log.error("Error calling ML service: {}", e.getMessage());
-            return Optional.empty();
-        } catch (Exception e) {
-            log.error("Unexpected error calling ML service", e);
-            return Optional.empty();
-        }
+    // Создание базового решения для fallback случая
+    private ScoringDecision createFallbackDecision(Long scoringRequestId) {
+        log.debug("Создание fallback решения для запроса ID: {}", scoringRequestId);
+        ScoringDecision fallbackDecision = new ScoringDecision();
+        fallbackDecision.setScoringRequestId(scoringRequestId);
+        fallbackDecision.setDecision("MANUAL_REVIEW");
+        fallbackDecision.setReason("Использован fallback скоринг из-за ошибки");
+        fallbackDecision.setAppliedPolicy("SYSTEM_FALLBACK");
+        fallbackDecision.setPriority("MEDIUM");
+        fallbackDecision.setFinalDecision("PENDING");
+        return fallbackDecision;
     }
 
-    private Map<String, Object> buildMLRequestData(ScoringRequest request) {
-        Map<String, Object> mlData = new HashMap<>();
-        mlData.put("companyName", request.getCompanyName());
-        mlData.put("inn", request.getInn());
-        mlData.put("businessType", request.getBusinessType());
-        mlData.put("yearsInBusiness", request.getYearsInBusiness());
-        mlData.put("annualRevenue", request.getAnnualRevenue());
-        mlData.put("employeeCount", request.getEmployeeCount());
-        mlData.put("requestedAmount", request.getRequestedAmount());
-        mlData.put("hasExistingLoans", request.getHasExistingLoans());
-        mlData.put("industry", request.getIndustry());
-        mlData.put("creditHistory", request.getCreditHistory());
-        return mlData;
-    }
-
-    private void processMLResponse(ScoringRequest request, Map<String, Object> mlResponse) {
-        Integer mlScore = extractScoreFromResponse(mlResponse);
-        String decision = extractDecisionFromResponse(mlResponse);
-
-        if (mlScore != null && decision != null) {
-            Double normalizedScore = mlScore / 1000.0;
-            String riskLevel = convertToRiskLevel(decision);
-            request.setScore(normalizedScore);
-            request.setRiskLevel(riskLevel);
-            log.debug("ML response processed - Score: {}, Risk Level: {}", normalizedScore, riskLevel);
-        } else {
-            log.warn("Invalid ML response, using fallback scoring");
-            useFallbackScoring(request);
-            metricsService.incrementFallbackScoring();
-        }
-    }
-
-    private Integer extractScoreFromResponse(Map<String, Object> mlResponse) {
-        return Optional.ofNullable(mlResponse.get("score"))
-                .or(() -> Optional.ofNullable(mlResponse.get("Score")))
-                .or(() -> Optional.ofNullable(mlResponse.get("final_score")))
-                .filter(Integer.class::isInstance)
-                .map(Integer.class::cast)
-                .orElse(null);
-    }
-
-    private String extractDecisionFromResponse(Map<String, Object> mlResponse) {
-        return Optional.ofNullable(mlResponse.get("decision"))
-                .or(() -> Optional.ofNullable(mlResponse.get("Decision")))
-                .or(() -> Optional.ofNullable(mlResponse.get("risk_level")))
-                .or(() -> Optional.ofNullable(mlResponse.get("status")))
-                .filter(String.class::isInstance)
-                .map(String.class::cast)
-                .orElse(null);
-    }
-
-    private String convertToRiskLevel(String decision) {
-        if (decision == null) return "MEDIUM";
-
-        String upperDecision = decision.toUpperCase();
-        if (upperDecision.contains("APPROVE") || "LOW".equals(upperDecision)) return "LOW";
-        if (upperDecision.contains("REJECT") || "HIGH".equals(upperDecision)) return "HIGH";
-        if (upperDecision.contains("MANUAL") || upperDecision.contains("REVIEW") || "MEDIUM".equals(upperDecision))
-            return "MEDIUM";
-        return "MEDIUM";
-    }
-
-    private void useFallbackScoring(ScoringRequest request) {
-        Double fallbackScore = calculateSimpleScore(request);
-        request.setScore(fallbackScore);
-        request.setRiskLevel(determineRiskLevel(fallbackScore));
-        log.debug("Fallback scoring - Score: {}, Risk Level: {}", fallbackScore, request.getRiskLevel());
-    }
-
-    private Double calculateSimpleScore(ScoringRequest request) {
-        double score = 0.5;
-
-        if (request.getAnnualRevenue() != null && request.getAnnualRevenue() > 1_000_000) score += 0.2;
-        if (request.getEmployeeCount() != null && request.getEmployeeCount() > 10) score += 0.1;
-        if (request.getYearsInBusiness() != null && request.getYearsInBusiness() > 3) score += 0.1;
-        if (request.getCreditHistory() != null && request.getCreditHistory() > 2) score += 0.1;
-        if (Boolean.TRUE.equals(request.getHasExistingLoans())) score -= 0.1;
-
-        return Math.max(0.0, Math.min(score, 1.0));
-    }
-
-    private String determineRiskLevel(Double score) {
-        if (score >= 0.7) return "LOW";
-        else if (score >= 0.4) return "MEDIUM";
-        else return "HIGH";
-    }
-
-    private EnhancedScoringResponse enhanceWithDecisionInfo(ScoringResponse response, ScoringDecision decision) {
-        try {
-            EnhancedScoringResponse enhancedResponse = new EnhancedScoringResponse();
-            enhancedResponse.setId(response.getId());
-            enhancedResponse.setCompanyName(response.getCompanyName());
-            enhancedResponse.setInn(response.getInn());
-            enhancedResponse.setScore(response.getScore());
-            enhancedResponse.setRiskLevel(response.getRiskLevel());
-            enhancedResponse.setCreatedAt(response.getCreatedAt());
-
-            // Определяем статус обработки на основе решения политик
-            String processingStatus = "MANUAL_REVIEW";
-            if (decision != null) {
-                processingStatus = switch (decision.getDecision()) {
-                    case "AUTO_APPROVE" -> "AUTO_APPROVED";
-                    case "AUTO_REJECT" -> "AUTO_REJECTED";
-                    case "ESCALATE_TO_MANAGER" -> "ESCALATED";
-                    default -> "MANUAL_REVIEW";
-                };
-
-                enhancedResponse.setPriority(decision.getPriority());
-                enhancedResponse.setDecisionReason(decision.getReason());
-
-                // Преобразуем decision в response DTO
-                ScoringDecisionResponse decisionResponse = new ScoringDecisionResponse();
-                decisionResponse.setId(decision.getId());
-                decisionResponse.setScoringRequestId(decision.getScoringRequestId());
-                decisionResponse.setDecision(decision.getDecision());
-                decisionResponse.setReason(decision.getReason());
-                decisionResponse.setAppliedPolicy(decision.getAppliedPolicy());
-                decisionResponse.setPriority(decision.getPriority());
-                decisionResponse.setManagerNotes(decision.getManagerNotes());
-                decisionResponse.setFinalDecision(decision.getFinalDecision());
-                decisionResponse.setResolvedBy(decision.getResolvedBy());
-                decisionResponse.setResolvedAt(decision.getResolvedAt());
-                decisionResponse.setCreatedAt(decision.getCreatedAt());
-
-                enhancedResponse.setDecisionDetails(decisionResponse);
-            } else {
-                enhancedResponse.setPriority("MEDIUM");
-                enhancedResponse.setDecisionReason("No policy decision available");
-            }
-
-            enhancedResponse.setProcessingStatus(processingStatus);
-
-            return enhancedResponse;
-
-        } catch (Exception e) {
-            log.warn("Error enhancing response with decision info, returning original response");
-            EnhancedScoringResponse fallback = new EnhancedScoringResponse();
-            fallback.setId(response.getId());
-            fallback.setCompanyName(response.getCompanyName());
-            fallback.setInn(response.getInn());
-            fallback.setScore(response.getScore());
-            fallback.setRiskLevel(response.getRiskLevel());
-            fallback.setCreatedAt(response.getCreatedAt());
-            fallback.setProcessingStatus("MANUAL_REVIEW");
-            fallback.setPriority("MEDIUM");
-            fallback.setDecisionReason("Error processing policy information");
-            return fallback;
-        }
-    }
-
+    // Настройка MDC для логирования контекста запроса
     private void setupMDC(String companyName, String inn) {
         if (companyName != null) MDC.put("companyName", companyName);
         if (inn != null) MDC.put("inn", inn);
     }
 
+    // Очистка MDC после обработки запроса
     private void cleanupMDC() {
         MDC.remove("companyName");
         MDC.remove("inn");
+        MDC.remove("scoringRequestId");
+        MDC.remove("policyDecision");
+        MDC.remove("policyPriority");
+        MDC.remove("mlServiceUsed");
+        MDC.remove("fallbackUsed");
+        MDC.remove("error");
+        MDC.remove("errorMessage");
+        MDC.remove("riskLevel");
+        MDC.remove("page");
+        MDC.remove("size");
     }
 }

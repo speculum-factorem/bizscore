@@ -57,7 +57,7 @@ class AdvancedScoringControllerTest {
 
         // When & Then
         mockMvc.perform(post("/api/v2/scoring/batch")
-                        .with(crf())
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(batchRequest)))
                 .andExpect(status().isOk())

@@ -1,8 +1,6 @@
 package com.bizscore.integration;
 
 import com.bizscore.dto.request.CalculateScoreRequest;
-import com.bizscore.entity.ScoringRequest;
-import com.bizscore.repository.ScoringRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,9 +30,6 @@ class ScoringIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
-
-    @Autowired
-    private ScoringRepository scoringRepository;
 
     @Test
     @WithMockUser
