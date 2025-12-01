@@ -33,7 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Тесты для расширенного контроллера скоринга
  * Проверяет API endpoints и безопасность
  */
-@WebMvcTest(AdvancedScoringController.class)
+@WebMvcTest(controllers = AdvancedScoringController.class)
 @Import(AdvancedSecurityConfig.class)
 class AdvancedScoringControllerTest {
 
@@ -90,6 +90,7 @@ class AdvancedScoringControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(batchRequest)))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.batchId").exists())  // Проверяем наличие поля
                 .andExpect(jsonPath("$.batchId").value("test-batch-id"))
                 .andExpect(jsonPath("$.totalRequests").value(1));
     }
@@ -99,8 +100,12 @@ class AdvancedScoringControllerTest {
     void calculateBatchScore_WithInsufficientPermissions_ReturnsForbidden() throws Exception {
         // Given
         BatchScoringRequest batchRequest = new BatchScoringRequest();
+        batchRequest.setRequests(new ArrayList<>());
 
         // When & Then
+        // В WebMvcTest с отключенными фильтрами, @PreAuthorize все еще должен работать
+        // Но если фильтры отключены, Security может не проверить роли правильно
+        // Проверяем, что запрос отклонен (403 Forbidden)
         mockMvc.perform(post("/api/v2/scoring/batch")
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)

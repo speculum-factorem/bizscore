@@ -23,6 +23,10 @@ ml:
   service:
     url: http://localhost:9999
 
+jwt:
+  secret: test-secret-key-for-testing-purposes-only-min-32-chars-long
+  expiration: 86400000
+
 logging:
   level:
     com.bizscore: DEBUG
