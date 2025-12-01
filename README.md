@@ -556,8 +556,8 @@ Service → @Async → CompletableFuture → Service → Repository → PostgreS
 1. **Клонирование репозитория:**
 
 ```bash
-git clone https://github.com/your-org/bizscore-service.git
-cd bizscore-service
+git clone https://github.com/speculum-factorem/bizscore.git
+cd bizscore
 ```
 
 2. **Создание базы данных:**
