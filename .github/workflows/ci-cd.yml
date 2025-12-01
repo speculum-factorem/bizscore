@@ -59,11 +59,12 @@ jobs:
           SPRING_JPA_DATABASE_PLATFORM: org.hibernate.dialect.PostgreSQLDialect
           SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
 
-      # Шаг 5: Генерация отчета о покрытии тестами
+      # Шаг 4: Генерация отчета о покрытии тестами
       - name: Генерация отчета о покрытии тестами
+        if: always()
         run: mvn jacoco:report
 
-      # Шаг 6: Загрузка отчета о покрытии в Codecov
+      # Шаг 5: Загрузка отчета о покрытии в Codecov
       - name: Загрузка отчета о покрытии в Codecov
         if: always()
         uses: codecov/codecov-action@v3
