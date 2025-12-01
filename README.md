@@ -1,13 +1,9 @@
 # BizScore Service
 
 ![Java](https://img.shields.io/badge/Java-21-orange?logo=openjdk)
-
 ![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.3.0-6DB33F?style=for-the-badge&logo=spring-boot&logoColor=white)
-
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-316192?style=for-the-badge&logo=postgresql&logoColor=white)
-
 ![Docker](https://img.shields.io/badge/Docker-2CA5E0?style=for-the-badge&logo=docker&logoColor=white)
-
 ![Maven](https://img.shields.io/badge/Maven-3.9-02303A?style=for-the-badge&logo=apache-maven&logoColor=white)
 
 Комплексный сервис для скоринга бизнеса в реальном времени. Система предоставляет возможность финансовым институтам и кредитным организациям оценивать кредитоспособность компаний на основе их финансовых показателей, истории и других факторов риска.
