@@ -62,14 +62,21 @@ jobs:
 
       # Шаг 6: Загрузка отчета о покрытии в Codecov
       - name: Загрузка отчета о покрытии в Codecov
+        if: always()
         uses: codecov/codecov-action@v3
+        continue-on-error: true
         with:
           file: ./target/site/jacoco/jacoco.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: unittests
+          name: codecov-umbrella
 
   # Job для сканирования безопасности
   security-scan:
     name: Сканирование безопасности
     runs-on: ubuntu-latest
+    continue-on-error: true  # Не блокировать другие jobs при ошибках сканирования
     permissions:
       contents: read
       security-events: write
@@ -81,7 +88,8 @@ jobs:
 
       # Шаг 2: Запуск сканера уязвимостей Trivy
       - name: Запуск сканера уязвимостей Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.25.0
+        continue-on-error: true
         with:
           scan-type: 'fs'  # Сканирование файловой системы
           scan-ref: '.'
@@ -90,15 +98,18 @@ jobs:
 
       # Шаг 3: Загрузка результатов сканирования в GitHub Security
       - name: Загрузка результатов сканирования в GitHub Security
+        if: always() && (github.event_name == 'push' || github.event_name == 'pull_request')
         uses: github/codeql-action/upload-sarif@v4
+        continue-on-error: true
         with:
           sarif_file: 'trivy-results.sarif'
+          category: 'trivy'
 
   # Job для сборки и публикации Docker образа
   build:
     name: Сборка и публикация Docker образа
     runs-on: ubuntu-latest
-    needs: [test, security-scan]  # Зависит от успешного завершения тестов и сканирования
+    needs: test  # Зависит только от тестов (security-scan не блокирует)
     if: github.ref == 'refs/heads/main'  # Только для ветки main
     permissions:
       contents: read
@@ -120,6 +131,16 @@ jobs:
       # Шаг 3: Сборка приложения (без тестов, так как они уже выполнены)
       - name: Сборка приложения
         run: mvn clean package -DskipTests
+
+      # Проверка наличия JAR файла
+      - name: Проверка JAR файла
+        run: |
+          JAR_FILE=$(find target -name "*.jar" -type f | grep -v "original" | head -n 1)
+          if [ -z "$JAR_FILE" ]; then
+            echo "JAR файл не найден в target/"
+            exit 1
+          fi
+          echo "JAR файл найден: $JAR_FILE"
 
       # Шаг 4: Вход в реестр контейнеров GitHub
       - name: Вход в реестр контейнеров

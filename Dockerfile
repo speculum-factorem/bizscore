@@ -18,13 +18,17 @@ COPY --from=builder application/snapshot-dependencies/ ./
 COPY --from=builder application/application/ ./
 
 # Create logs directory with proper permissions
+# Install curl for healthcheck
 USER root
-RUN mkdir -p /app/logs && chown appuser:appuser /app/logs
+RUN apt-get update && apt-get install -y curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /app/logs && \
+    chown appuser:appuser /app/logs
 USER appuser
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/api/health || exit 1
+    CMD curl -f http://localhost:8080/actuator/health || exit 1
 
 # JVM options for production
 ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75 -Djava.security.egd=file:/dev/./urandom"
