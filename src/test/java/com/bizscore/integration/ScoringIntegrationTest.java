@@ -1,7 +1,6 @@
 package com.bizscore.integration;
 
 import com.bizscore.client.MlServiceClient;
-import com.bizscore.config.TestSecurityConfig;
 import com.bizscore.dto.request.CalculateScoreRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -9,7 +8,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.ActiveProfiles;
@@ -30,10 +28,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Проверяет полный цикл работы приложения
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
-@AutoConfigureMockMvc
+@AutoConfigureMockMvc(addFilters = false)
 @ActiveProfiles("test")
 @Transactional
-@Import(TestSecurityConfig.class)
 class ScoringIntegrationTest {
 
     @Autowired
