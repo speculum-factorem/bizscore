@@ -1,5 +1,6 @@
 package com.bizscore.controller;
 
+import com.bizscore.config.AdvancedSecurityConfig;
 import com.bizscore.config.RateLimitFilter;
 import com.bizscore.dto.request.BatchScoringRequest;
 import com.bizscore.dto.request.CalculateScoreRequest;
@@ -13,11 +14,14 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
@@ -30,6 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Проверяет API endpoints и безопасность
  */
 @WebMvcTest(AdvancedScoringController.class)
+@Import(AdvancedSecurityConfig.class)
 class AdvancedScoringControllerTest {
 
     @Autowired
@@ -59,7 +64,11 @@ class AdvancedScoringControllerTest {
         // Given
         CalculateScoreRequest request1 = new CalculateScoreRequest();
         request1.setCompanyName("Test Company");
-        request1.setInn("1234567890");
+        request1.setInn("7707083893");
+        request1.setYearsInBusiness(5);
+        request1.setAnnualRevenue(5000000.0);
+        request1.setEmployeeCount(50);
+        request1.setRequestedAmount(1000000.0);
 
         BatchScoringRequest batchRequest = new BatchScoringRequest();
         batchRequest.setRequests(Arrays.asList(request1));
@@ -67,6 +76,10 @@ class AdvancedScoringControllerTest {
         BatchScoringResponse response = new BatchScoringResponse();
         response.setBatchId("test-batch-id");
         response.setTotalRequests(1);
+        response.setSuccessfulResults(new ArrayList<>());
+        response.setFailedResults(new ArrayList<>());
+        response.setProcessedAt(new Date());
+        response.setStatus("COMPLETED");
 
         when(scoringService.processBatchScoring(any(BatchScoringRequest.class)))
                 .thenReturn(response);
@@ -77,7 +90,7 @@ class AdvancedScoringControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(batchRequest)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.batchId").exists())
+                .andExpect(jsonPath("$.batchId").value("test-batch-id"))
                 .andExpect(jsonPath("$.totalRequests").value(1));
     }
 

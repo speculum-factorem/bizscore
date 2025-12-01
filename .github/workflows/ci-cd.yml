@@ -74,6 +74,10 @@ jobs:
   security-scan:
     name: Сканирование безопасности
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
     steps:
       # Шаг 1: Получение кода
       - name: Получение кода
@@ -100,6 +104,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, security-scan]  # Зависит от успешного завершения тестов и сканирования
     if: github.ref == 'refs/heads/main'  # Только для ветки main
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       # Шаг 1: Получение кода
