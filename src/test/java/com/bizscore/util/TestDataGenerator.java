@@ -12,7 +12,8 @@ public class TestDataGenerator {
     public static CalculateScoreRequest createValidCalculateScoreRequest() {
         CalculateScoreRequest request = new CalculateScoreRequest();
         request.setCompanyName("Тестовая компания");
-        request.setInn("123456789012");
+        // Используем валидный 10-значный ИНН с правильной контрольной суммой
+        request.setInn("7707083893");
         request.setBusinessType("ООО");
         request.setYearsInBusiness(5);
         request.setAnnualRevenue(5000000.0);

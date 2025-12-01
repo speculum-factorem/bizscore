@@ -1,9 +1,13 @@
 package com.bizscore.controller;
 
+import com.bizscore.config.RateLimitFilter;
 import com.bizscore.dto.request.BatchScoringRequest;
 import com.bizscore.dto.request.CalculateScoreRequest;
 import com.bizscore.dto.response.BatchScoringResponse;
 import com.bizscore.service.AdvancedScoringService;
+import com.bizscore.service.CustomUserDetailsService;
+import com.bizscore.service.JwtService;
+import com.bizscore.service.RateLimitService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,6 +37,18 @@ class AdvancedScoringControllerTest {
 
     @MockBean
     private AdvancedScoringService scoringService;
+
+    @MockBean
+    private JwtService jwtService;
+
+    @MockBean
+    private CustomUserDetailsService userDetailsService;
+
+    @MockBean
+    private RateLimitFilter rateLimitFilter;
+
+    @MockBean
+    private RateLimitService rateLimitService;
 
     @Autowired
     private ObjectMapper objectMapper;

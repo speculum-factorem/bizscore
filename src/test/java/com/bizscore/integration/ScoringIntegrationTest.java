@@ -37,7 +37,7 @@ class ScoringIntegrationTest {
         // Given
         CalculateScoreRequest request = new CalculateScoreRequest();
         request.setCompanyName("Test Company");
-        request.setInn("123456789012");
+        request.setInn("7707083893");
         request.setAnnualRevenue(5000000.0);
         request.setYearsInBusiness(3);
         request.setEmployeeCount(25);
