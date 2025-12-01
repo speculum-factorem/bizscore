@@ -48,13 +48,9 @@ jobs:
           distribution: 'temurin'
           cache: maven  # Кэширование Maven зависимостей
 
-      # Шаг 3: Запуск unit тестов
-      - name: Запуск unit тестов
-        run: mvn test
-
-      # Шаг 4: Запуск интеграционных тестов
-      - name: Запуск интеграционных тестов
-        run: mvn verify -Dspring.profiles.active=test
+      # Шаг 3: Запуск всех тестов
+      - name: Запуск тестов
+        run: mvn test -Dspring.profiles.active=test
         env:
           SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/bizscoredb_test
           SPRING_DATASOURCE_USERNAME: postgres

@@ -89,33 +89,22 @@ class SecurityTest {
     @Test
     @WithMockUser(roles = "USER")
     void accessAdminEndpoint_WithUserRole_ShouldFail() throws Exception {
-        // Этот endpoint находится в AdvancedScoringController
-        // GET запрос не поддерживается, но если endpoint доступен, то должен вернуть 405 (Method Not Allowed)
-        // или 403 (Forbidden) если security работает правильно
-        // В @WebMvcTest только ScoringController загружен, поэтому может быть 404 или 405
-        var result = mockMvc.perform(get("/api/v2/scoring/batch")
+        // Этот endpoint находится в AdvancedScoringController, который не загружен в этом тесте
+        // GET запрос не поддерживается для этого endpoint (только POST)
+        // Ожидаем 404, так как контроллер не загружен
+        mockMvc.perform(get("/api/v2/scoring/batch")
                         .with(SecurityMockMvcRequestPostProcessors.csrf()))
-                .andReturn();
-        
-        int status = result.getResponse().getStatus();
-        // Может быть 404 (endpoint не найден), 405 (метод не поддерживается) или 403 (нет доступа)
-        assertTrue(status == 404 || status == 405 || status == 403, 
-                "Expected 404, 405 or 403, but got " + status);
+                .andExpect(status().isNotFound());
     }
 
     @Test
     @WithMockUser(roles = "ADMIN")
     void accessAdminEndpoint_WithAdminRole_ShouldSucceed() throws Exception {
-        // Этот endpoint находится в AdvancedScoringController
-        // GET запрос не поддерживается, поэтому ожидаем 405 (Method Not Allowed)
-        // или 404 если контроллер не загружен
-        var result = mockMvc.perform(get("/api/v2/scoring/batch")
+        // Этот endpoint находится в AdvancedScoringController, который не загружен в этом тесте
+        // GET запрос не поддерживается для этого endpoint (только POST)
+        // Ожидаем 404, так как контроллер не загружен
+        mockMvc.perform(get("/api/v2/scoring/batch")
                         .with(SecurityMockMvcRequestPostProcessors.csrf()))
-                .andReturn();
-        
-        int status = result.getResponse().getStatus();
-        // Может быть 404 (endpoint не найден) или 405 (метод не поддерживается)
-        assertTrue(status == 404 || status == 405, 
-                "Expected 404 or 405, but got " + status);
+                .andExpect(status().isNotFound());
     }
 }
