@@ -22,6 +22,7 @@ public class PolicyCondition {
     @Column(nullable = false)
     private String operator;
 
+    @Column(name = "condition_value")
     private String value;
 
     private Double numericValue;
